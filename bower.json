@@ -1,0 +1,22 @@
+{
+  "name": "purescript-pro-xmpp-with-pux",
+  "ignore": [
+    "**/.*",
+    "node_modules",
+    "bower_components",
+    "output"
+  ],
+  "dependencies": {
+    "purescript-affjax": "^4.0.0",
+    "purescript-datetime": "^3.0.0",
+    "purescript-now": "^3.0.0",
+    "purescript-profunctor-lenses": "^3.2.0",
+    "purescript-strophejs": "https://github.com/paluh/purescript-strophejs.git#master",
+    "purescript-pux": "^9.2.0"
+
+  },
+  "devDependencies": {
+    "purescript-psci-support": "^3.0.0",
+    "purescript-debug": "^3.0.0"
+  }
+}
