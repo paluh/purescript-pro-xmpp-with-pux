@@ -10,7 +10,7 @@ var config = {
   entry: {
     'chat': './src/Main'
   },
-  devtool: 'eval', // 'source-map',
+  devtool: 'source-map', //'eval', // 'source-map',
   //devServer: {
   //  contentBase: '.',
   //  port: 9876,
@@ -25,7 +25,7 @@ var config = {
   },
   plugins: [
     bowerWebpackPlugin,
-    new webpack.ProvidePlugin({'window.Strophe': 'strophejs'})
+    //new webpack.ProvidePlugin({'window.Strophe': 'strophejs', 'Strophe': 'strophejs'})
   ],
   module: {
     loaders: [{
@@ -37,7 +37,7 @@ var config = {
         output: './output',
         psc: 'psa',
         pscIde: true,
-        pscIdeArgs: {'port': 4032}
+        pscIdeArgs: {'port': 4042}
       }
     }, {
       test: /\.js$/,

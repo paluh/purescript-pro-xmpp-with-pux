@@ -3,89 +3,84 @@ module Chat.Connection where
 import Prelude
 import Signal.Channel as Channel
 import Strophe as Strophe
+import Strophe as Strophe
 import Chat.Utils (onlyEffEffect', onlyEffect')
 import Control.Monad.Eff (Eff)
-import Control.Monad.Eff.Class (liftEff)
 import Control.Monad.Eff.Now (NOW, nowDateTime)
 import DOM (DOM)
 import Data.DateTime.Locale (LocalDateTime)
 import Data.Maybe (Maybe(..))
-import Data.Traversable (traverse)
 import Debug.Trace (traceAnyA)
 import Pux (EffModel, noEffects)
 import Signal.Channel (CHANNEL, Channel)
-import Strophe (CONNECTION, Connection, HTTP, Jid, Password, ServerUrl, StanzaDocument, Status(Disconnected), disconnect)
-import Strophe.Xmpp.Stanza (Stanza, fromDocument)
+import Strophe (CONNECTION, Connection, HTTP, Jid, Password, ServerUrl, StanzaDocument, StanzaHandlerRef, Status(..), deleteHandler)
+import Strophe.Xmpp.Stanza (Stanza(..), fromDocument)
 
-type State =
-  { connection ∷ Maybe Connection
+type Credentials =
+  { jid ∷ Jid
+  , password ∷ Password
+  }
+
+type State' =
+  { connection ∷ Connection
+  , credentials ∷ Credentials
   , serverUrl ∷ ServerUrl
-  , credentials ∷
-      Maybe
-        { jid ∷ Jid
-        , password ∷ Password
-        }
-  , incomingStanzaChannel ∷
-      Channel
-        (Maybe
-          { stanza ∷ Stanza
-          , receivedAt ∷ LocalDateTime
-          })
-  , outgoingStanzaChannel ∷
-      Channel
-        (Maybe
-          { stanza ∷ Stanza
-          , sentAt ∷ LocalDateTime
-          })
-  , statusChannel ∷ Channel Status
+  , stanzaHandlerRef ∷ StanzaHandlerRef
   , status ∷ Status
   }
 
+type State = Maybe State'
+
 data Action
-  = StatusChange Status
-  | StanzaSent (Maybe {stanza ∷ Stanza, sentAt ∷ LocalDateTime})
-  | StanzaReceived (Maybe {stanza ∷ Stanza, receivedAt ∷ LocalDateTime})
-  | Connect Jid Password
-  -- to satisfy typechecker
+  = Connect ServerUrl Credentials
   | Disconnect
-  | NewConnectionSpawned Connection
+  | NewConnectionSpawned ServerUrl Credentials Connection StanzaHandlerRef
+  | SendStanza Stanza
+  | StanzaReceived (Maybe {stanza ∷ Stanza, receivedAt ∷ LocalDateTime})
+  | StanzaSent (Maybe {stanza ∷ Stanza, sentAt ∷ LocalDateTime})
+  | StatusChange Status
 
--- handling communication
+disconnect :: ∀ eff. Connection → StanzaHandlerRef → String → Eff ( connection ∷ CONNECTION , http ∷ HTTP | eff ) Unit
+disconnect conn stanzaHandlerRef msg = do
+  deleteHandler conn stanzaHandlerRef
+  Strophe.disconnect conn msg
+
 update ∷ ∀ eff. Action → State → EffModel State Action (connection ∷ CONNECTION, dom ∷ DOM, http ∷ HTTP, now ∷ NOW | eff)
-update (StanzaReceived (Just {stanza})) state =
-  onlyEffect' state (traceAnyA stanza >>= const (traceAnyA "ABOVE IS STANZA"))
-
--- handling connection
-update (StatusChange Disconnected) state =
-  noEffects $ state { connection = Nothing, status = Disconnected}
-update (StatusChange status) state = noEffects $ state { status = status }
-update Disconnect state@{ connection: Just conn } =
-  { state: state { connection = Nothing }
-  , effects: [liftEff (disconnect conn "on request") >>= const (pure Nothing)]
-  }
-update (Connect jid password) state@{ connection, incomingStanzaChannel, statusChannel } =
-  { state: state { credentials = Just { jid, password }, connection = Nothing }
-  , effects: [ spawnConnection ]
-  }
- where
-  spawnConnection = liftEff $ do
-    void $ (flip disconnect "we are going to create new connection") `traverse` connection
-    conn ← Strophe.connection state.serverUrl
-    Strophe.addHandler
-      conn
-      (\stanzaDocument → do
-        receivedAt ← nowDateTime
-        stanza ← fromDocument stanzaDocument
-        Channel.send incomingStanzaChannel ({stanza: _, receivedAt} <$> stanza) >>= const (pure true))
-    connect conn jid password statusChannel
-    pure <<< Just $ NewConnectionSpawned conn
-update (NewConnectionSpawned conn) state = noEffects $ state { connection = Just conn }
--- debug log
-update a s = onlyEffEffect' s (traceAnyA a >>= const (traceAnyA s))
-
--- wire ∷ ∀ action eff. App action action State → Prism' action Action → Eff eff Unit
--- setupConnetors
-
+update (Connect _ _) state = noEffects state
+update Disconnect state =
+  case state of
+    Just s →
+      onlyEffEffect' Nothing (disconnect s.connection s.stanzaHandlerRef "on request")
+    otherwise → noEffects Nothing
+update (NewConnectionSpawned serverUrl credentials connection stanzaHandlerRef) state =
+  let newState = Just {connection, credentials, serverUrl, stanzaHandlerRef, status: Disconnected}
+  in case state of
+    Nothing → noEffects newState
+    Just s →
+      onlyEffEffect' newState (disconnect s.connection s.stanzaHandlerRef "on request")
+update (SendStanza stanza) state@(Just { connection, status: Connected }) =
+  case stanza of
+    OtherStanza stanzaDocument →
+      let
+        s = do
+          stanzaDocument' ← Strophe.send' connection stanzaDocument
+          sentAt ← nowDateTime
+          stanzaInfo ← ((\stanza → {stanza, sentAt}) <$> _) <$> fromDocument stanzaDocument'
+          pure (Just <<< StanzaSent $ stanzaInfo)
+      in onlyEffEffect' state s
+    otherwise → noEffects state
+update (SendStanza _) state =
+  noEffects state
+update (StanzaReceived s) state =
+  case s of
+    Just { stanza } → onlyEffect' state (traceAnyA stanza >>= const (traceAnyA "ABOVE IS STANZA"))
+    Nothing → noEffects state
+update (StanzaSent _) state =
+  noEffects state
+update (StatusChange status) state =
+  case state of
+    Just s → noEffects $ Just (s { status = status })
+    otherwise → noEffects state
 
 connect ∷ ∀ eff. Connection → Jid → Password → Channel Status → Eff ( http ∷ HTTP , channel ∷ CHANNEL, connection ∷ CONNECTION | eff ) Unit
 connect connection jid password statusChannel = do

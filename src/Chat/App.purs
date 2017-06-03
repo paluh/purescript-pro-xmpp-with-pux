@@ -20,19 +20,21 @@ import Data.Maybe (Maybe(..))
 import Data.StrMap (fromFoldable)
 import Data.Tuple (Tuple(..))
 import Network.HTTP.Affjax (AJAX)
-import Pux (FoldP, noEffects)
+import Pux (FoldP, noEffects, onlyEffects)
 import Pux.DOM.Events (onClick)
 import Pux.DOM.HTML (HTML, mapEvent)
 import Signal.Channel (CHANNEL)
-import Strophe (CONNECTION, HTTP, Status, build, c, iq)
+import Strophe (CONNECTION, HTTP, ServerUrl(..), Status, build, c, iq)
+import Strophe.Xmpp.Stanza (Stanza(..))
 import Text.Smolder.HTML (button, h1, li, p, ul)
 import Text.Smolder.Markup (text, (#!))
 
 type State =
   { connection ∷ Connection.State
-  , stats ∷ Stats.State
-  , loginForm ∷ LoginForm.State
   , log ∷ List Status
+  , loginForm ∷ LoginForm.State
+  , serverUrl ∷ ServerUrl
+  , stats ∷ Stats.State
   }
 
 data Action
@@ -59,20 +61,13 @@ _ConnectionAction = Lens.prism ConnectionAction unwrap
     unwrap y = Either.Left y
 
 -- update ∷ ∀ eff. Action → State → EffModel State Action (http ∷ HTTP, ajax ∷ AJAX | eff)
-update ∷ ∀ eff. FoldP State Action (http ∷ HTTP, ajax ∷ AJAX, connection ∷ CONNECTION, console ∷ CONSOLE, channel ∷ CHANNEL, dom ∷ DOM, now ∷ NOW, err ∷ EXCEPTION | eff)
+update ∷ ∀ eff. FoldP State Action (http ∷ HTTP, ajax ∷ AJAX, connection ∷ CONNECTION, console ∷ CONSOLE, channel ∷ CHANNEL, dom ∷ DOM, now ∷ NOW, exception ∷ EXCEPTION | eff)
 update a@(LoginFormAction (LoginForm.Login jid password)) state =
-  let
-    connectionEffModel =
-      Connection.update (Connection.Connect jid password) (Lens.view connectionL state)
-  in
-    focusEffModel connectionL _ConnectionAction connectionEffModel state
-update SendPing state@{connection: connectionState@{connection: Just connection}}=
-  onlyEffEffect'
+  onlyEffects
     state
-    (Connection.send
-      connection
-      ping
-      connectionState.outgoingStanzaChannel)
+    [pure <<< Just <<< ConnectionAction $ (Connection.Connect state.serverUrl {jid, password})]
+update SendPing state =
+  onlyEffects state [ pure (Just <<< ConnectionAction <<< Connection.SendStanza <<< OtherStanza $ ping) ]
  where
   ping = pureST (do
     b ← iq (fromFoldable [Tuple "to" "paluh@localhost", Tuple "type" "get"])
@@ -97,17 +92,20 @@ update a s =
   statsUpdateFun = UpdateFun (focus statsL _ConnectionAction Stats.foldp)
 
 view ∷ State → HTML Action
-view { connection : { status }, loginForm, log, stats } = do
-  case status of
-    Strophe.Connected →
+view { connection, loginForm, log, stats } = do
+  case connection of
+    Just { status: Strophe.Connected } →
       h1 $ do
         text "connected"
         button #! onClick (pure (ConnectionAction Connection.Disconnect)) $ text "disconnect"
         button #! onClick (pure (SendPing)) $ text "ping"
-    Strophe.Disconnecting →
+    Just { status: Strophe.Disconnecting }→
       h1 $ text "disconnecting..."
-    otherwise →
+    Just { status } →
       mapEvent LoginFormAction (LoginForm.view loginForm (authStatus status))
+    Nothing →
+      mapEvent LoginFormAction (LoginForm.view loginForm Nothing)
+
   case maximumBy (\r1 r2 → compare r1.sentAt r2.sentAt) stats of
     Nothing → pure unit
     Just r → do
@@ -130,3 +128,4 @@ view { connection : { status }, loginForm, log, stats } = do
   authStatus Strophe.Disconnected = Just (LoginError "Disconnected")
   authStatus Strophe.Disconnecting = Just (LoginError "Disconnecting")
   authStatus Strophe.Error = Just (LoginError "Connection problem")
+  authStatus Strophe.Redirect = Just Authenticating
